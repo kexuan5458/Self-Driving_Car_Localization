@@ -61,6 +61,6 @@ It would be updated after coding has started.
 
 ## References
 
-[PCL (ICP)]("https://github.com/PointCloudLibrary/pcl")  
-[tf]("http://wiki.ros.org/tf")  
-[Direction Cosine Matrix]("http://www.starlino.com/dcm_tutorial.html") 
+[PCL (ICP)](https://github.com/PointCloudLibrary/pcl)  
+[tf](http://wiki.ros.org/tf)  
+[Direction Cosine Matrix](http://www.starlino.com/dcm_tutorial.html) 
