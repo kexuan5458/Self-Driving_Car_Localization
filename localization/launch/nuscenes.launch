@@ -1,0 +1,30 @@
+<launch>
+
+    <arg name="save_path" default="$(find localization)/results/results_3.csv" />
+    <param name="use_sim_time" value="true" />
+
+    <node pkg="rviz" type="rviz" name="display_result" output="screen" args="-d $(find localization)/config/nuscenes.rviz" />
+
+    <node name="map_publisher" pkg="map_tile_loader" type="map_publisher" output="screen">
+        <!-- <remap from="/query_pose" to="/lidar_pose"/> -->
+        <param name="map_path" type="string" value="/root/catkin_ws/data/nuscenes_maps" />
+    </node>
+    
+    <node pkg="localization" type="localizer" name="localizer" output="screen">
+        <rosparam file="$(find localization)/config/nuscenes.yaml" command="load" />
+        <rosparam param="result_save_path" subst_value="True">$(arg save_path)</rosparam>
+    </node>
+    
+    
+    
+    
+    <node pkg="tf2_ros" type="static_transform_publisher" name="car_lidar_frame_publisher" args="0.986 0 1.84 -0.015 0.017 -0.707 0.707 car nuscenes_lidar" />
+    
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf" clear_params="true">
+    	<rosparam file="$(find localization)/params/nuscenes_ekf.yaml" command="load" />
+    </node> 
+    <node pkg="robot_localization" type="ekf_localization_node" name="ekf_odom" clear_params="true">
+    	<rosparam file="$(find localization)/params/nuscenes_ekf_odom.yaml" command="load" />
+    	<remap from="odometry/filtered" to="odometry/filtered_wheel" />
+    </node> 
+</launch>
