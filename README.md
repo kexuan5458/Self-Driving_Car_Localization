@@ -12,13 +12,14 @@ In this project, I will develop a localization module for estimating the poses o
 
 ## Goal
 
-1. Implment a C++ localization algorithm.
-2. Try to get better localization result.
-3. Use pybind to make it easier to show the result of different map by Python.
+1. Implment a localization algorithm in C++.
+2. Implment an extende kalman filter algorithm in Python.
+3. Use `pybind` to combine Python EKF and C++ ICP.
+4. Compare different localization result.
 
 ## Prospective Users
 
-People who wants to compare different localization result more easily.
+People who wants to compare different localization result between C++ and Python.
 
 ## System Architecture
 
@@ -26,8 +27,9 @@ The project will be made accessible through the Python interpreter and uses C++ 
 The main workflow is as follows:
 
 1. Use `C++` to implement localization algorithm.  
-2. Design the interface for users reading the car pose in map frame by `Python`  
-3. Use pybind11 to make it callable by python.
+2. Use `Python` to implement extended Kalman filter algorithm.  
+3. Use pybind11 to make it callable by Python.
+4. Design the interface for users reading the localization result more easily.
 
 ## Test  
 The testing environment will be setup in Python. So, the development of the C++ backend goes with the developement of the pybind connector.
@@ -35,7 +37,6 @@ The testing environment will be setup in Python. So, the development of the C++ 
 ## API Description
 
 Return the location and velocity data of each frame. And show the accuracy or plot the comparison results.
-It would be updated after coding has started.
 
 ## Engineering Infrastructure
 
