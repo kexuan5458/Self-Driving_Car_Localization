@@ -1,3 +1,10 @@
+// docker exec -it ros bash
+// roscore
+// roslaunch localization nuscenes.launch save_path:="/root/catkin_ws/src/localization/results/result_2.csv"
+// roslaunch localization nuscenes.launch save_path:="/root/catkin_ws/src/localization/results/result_3.csv"
+// rosbag play -r 0.01 --pause data/sdc_localization_2_lite.bag --clock --topic /wheel_odometry /lidar_points /gps /imu/data
+// rosbag play -r 0.01 --pause data/sdc_localization_3_lite.bag --clock --topic /wheel_odometry /lidar_points /gps /imu/data
+
 #include<iostream>
 #include<fstream>
 #include<limits>
@@ -7,8 +14,10 @@
 #include<sensor_msgs/PointCloud2.h>
 #include<geometry_msgs/PointStamped.h>
 #include<geometry_msgs/PoseStamped.h>
+#include<geometry_msgs/PoseWithCovarianceStamped.h>
 #include<tf/transform_broadcaster.h>
 #include<tf2_eigen/tf2_eigen.h>
+#include<nav_msgs/Odometry.h>
 
 
 #include<Eigen/Dense>
@@ -26,13 +35,13 @@ private:
   std::vector<float> d_max_list, n_iter_list;
 
   ros::NodeHandle _nh;
-  ros::Subscriber sub_map, sub_points, sub_gps;
-  ros::Publisher pub_points, pub_pose;
+  ros::Subscriber sub_map, sub_points, sub_gps, sub_ekf;////////////////////////////////////
+  ros::Publisher pub_points, pub_pose, pub_car_pose;
   tf::TransformBroadcaster br;
 
   pcl::PointCloud<pcl::PointXYZI>::Ptr map_points;
   pcl::PointXYZ gps_point;
-  bool gps_ready = false, map_ready = false, initialied = false;
+  bool gps_ready = false, map_ready = false, initialized = false;
   Eigen::Matrix4f init_guess;
   int cnt = 0;
   
@@ -42,7 +51,7 @@ private:
   std::string result_save_path;
   std::ofstream outfile;
   geometry_msgs::Transform car2Lidar;
-  std::string mapFrame, lidarFrame;
+  std::string mapFrame, lidarFrame, carFrame;/////////////////////////////////////////////////
 
 public:
   Localizer(ros::NodeHandle nh): map_points(new pcl::PointCloud<pcl::PointXYZI>) {
@@ -57,7 +66,7 @@ public:
     _nh.param<float>("mapLeafSize", mapLeafSize, 1.0);
     _nh.param<std::string>("mapFrame", mapFrame, "world");
     _nh.param<std::string>("lidarFrame", lidarFrame, "nuscenes_lidar");
-
+    // _nh.param<std::string>("carFrame", carFrame, "car");//
 
     ROS_INFO("saving results to %s", result_save_path.c_str());
     outfile.open(result_save_path);
@@ -78,10 +87,14 @@ public:
     sub_map = _nh.subscribe("/map", 1, &Localizer::map_callback, this);
     sub_points = _nh.subscribe("/lidar_points", 400, &Localizer::pc_callback, this);
     sub_gps = _nh.subscribe("/gps", 1, &Localizer::gps_callback, this);
+    sub_ekf = _nh.subscribe("/odometry/filtered", 10, &Localizer::ekf_callback, this); /////////////////// I add this subscriber
+
     pub_points = _nh.advertise<sensor_msgs::PointCloud2>("/transformed_points", 1);
     pub_pose = _nh.advertise<geometry_msgs::PoseStamped>("/lidar_pose", 1);
+    pub_car_pose = _nh.advertise<geometry_msgs::PoseWithCovarianceStamped>("/car_pose", 1);
     init_guess.setIdentity();
     ROS_INFO("%s initialized", ros::this_node::getName().c_str());
+
   }
 
   // Gentaly end the node
@@ -127,11 +140,9 @@ public:
       ros::spinOnce();
     }
 
-   
-
     pcl::fromROSMsg(*msg, *scan_ptr);
     ROS_INFO("point size: %d", scan_ptr->width);
-    result = align_map(scan_ptr);
+    result = align_map(scan_ptr); // after ICP result
 
     // publish transformed points
     sensor_msgs::PointCloud2::Ptr out_msg(new sensor_msgs::PointCloud2);
@@ -149,7 +160,7 @@ public:
     );
     tf::Vector3 trans(result(0, 3), result(1, 3), result(2, 3));
     tf::Transform transform(rot, trans);
-    br.sendTransform(tf::StampedTransform(transform.inverse(), msg->header.stamp, lidarFrame, mapFrame));
+    // br.sendTransform(tf::StampedTransform(transform.inverse(), msg->header.stamp, lidarFrame, mapFrame));
 
 
     // publish lidar pose
@@ -163,31 +174,52 @@ public:
     pose.pose.orientation.y = transform.getRotation().getY();
     pose.pose.orientation.z = transform.getRotation().getZ();
     pose.pose.orientation.w = transform.getRotation().getW();
-    pub_pose.publish(pose);
+    pub_pose.publish(pose);  // publish lidar pose
 
     Eigen::Affine3d transform_c2l, transform_m2l;
     transform_m2l.matrix() = result.cast<double>();
     transform_c2l = (tf2::transformToEigen(car2Lidar));
     Eigen::Affine3d tf_p = transform_m2l * transform_c2l.inverse();
     geometry_msgs::TransformStamped transform_m2c = tf2::eigenToTransform(tf_p);
+    
 
     tf::Quaternion q(transform_m2c.transform.rotation.x, transform_m2c.transform.rotation.y, transform_m2c.transform.rotation.z, transform_m2c.transform.rotation.w);
     tfScalar yaw, pitch, roll;
     tf::Matrix3x3 mat(q);
     mat.getEulerYPR(yaw, pitch, roll);
-    outfile << ++cnt << "," << tf_p.translation().x() << "," << tf_p.translation().y() << "," << tf_p.translation().z() << "," << yaw << "," << pitch << "," << roll << std::endl;
+    outfile << ++cnt << "," << tf_p.translation().x() << "," << tf_p.translation().y() << "," << 0 << "," << yaw << "," << pitch << "," << roll << std::endl;
+    // This expresses an estimated (car)pose with a reference coordinate frame and timestamp
+
+    // publish car pose
+    geometry_msgs::PoseWithCovarianceStamped pose_car;
+    pose_car.header = msg->header;
+    pose_car.header.frame_id = mapFrame;  // this map is world frame
+    pose_car.pose.pose.position.x = tf_p.translation().x();
+    pose_car.pose.pose.position.y = tf_p.translation().y();
+    pose_car.pose.pose.position.z = tf_p.translation().z();
+    pose_car.pose.pose.orientation.x = transform_m2c.transform.rotation.x;  // orientation ~ rotation
+    pose_car.pose.pose.orientation.y = transform_m2c.transform.rotation.y;
+    pose_car.pose.pose.orientation.z = transform_m2c.transform.rotation.z;
+    pose_car.pose.pose.orientation.w = transform_m2c.transform.rotation.w;
+    pose_car.pose.covariance = {1, 0, 0, 0, 0, 0,
+                                0, 1, 0, 0, 0, 0,
+                                0, 0, 1, 0, 0, 0,
+                                0, 0, 0, 0.05, 0, 0,
+                                0, 0, 0, 0, 0.05, 0,
+                                0, 0, 0, 0, 0, 0.05};
+    pub_car_pose.publish(pose_car);  // publish car pose
+    std::cout << "Car_Pose" << std::endl;
+    std::cout << pose_car.pose.pose.position << std::endl;
 
   }
 
-  
-  
   void gps_callback(const geometry_msgs::PointStamped::ConstPtr& msg){
     ROS_INFO("Got GPS message");
     gps_point.x = msg->point.x;
     gps_point.y = msg->point.y;
     gps_point.z = msg->point.z;
 
-    if(!initialied){
+    if(!initialized){
     // if(true){
       geometry_msgs::PoseStamped pose;
       pose.header = msg->header;
@@ -199,10 +231,39 @@ public:
       rot.setIdentity();
       tf::Vector3 trans(msg->point.x, msg->point.y, msg->point.z);
       tf::Transform transform(rot, trans);
-      br.sendTransform(tf::StampedTransform(transform, msg->header.stamp, "world", "nuscenes_lidar"));
+      // Is this world->lidar ?
+      // br.sendTransform(tf::StampedTransform(transform, msg->header.stamp, "world", "nuscenes_lidar"));
     }
 
     gps_ready = true;
+    return;
+  }
+// navsat_transform_node - Allows users to easily transform geographic coordinates into the robot's world frame(typically map or odometry)
+  void ekf_callback(const nav_msgs::Odometry::ConstPtr& msg){
+    // nav_msgs::Odometry to Eigen::Matrix4f
+    Eigen::Matrix4f EKFeigen;
+
+    Eigen::Quaterniond quat;
+    quat.w() = msg->pose.pose.orientation.w;
+    quat.x() = msg->pose.pose.orientation.x;
+    quat.y() = msg->pose.pose.orientation.y;
+    quat.z() = msg->pose.pose.orientation.z;
+
+    Eigen::Isometry3d isometry = Eigen::Isometry3d::Identity();
+    isometry.linear() = quat.toRotationMatrix();
+    isometry.translation() = Eigen::Vector3d(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+    EKFeigen = isometry.matrix().cast<float>();
+    std::cout << "EKFeigen" << std::endl;
+    std::cout << msg->pose.pose.position << std::endl;
+
+    Eigen::Affine3f transform_c2l;
+    transform_c2l = (tf2::transformToEigen(car2Lidar)).cast<float>();
+
+    Eigen::Matrix4f transform_c2l_4f = transform_c2l.matrix(); // Affine3f to Matrix4f
+
+    Eigen::Matrix4f EKFmatrix4f = EKFeigen * transform_c2l_4f; // (Matrix4f) * (Matrix4f)
+  
+    init_guess = EKFmatrix4f;
     return;
   }
 
@@ -213,12 +274,11 @@ public:
     Eigen::Matrix4f result;
 
   /* [Part 1] Perform pointcloud preprocessing here e.g. downsampling use setLeafSize(...) ... */
-    /////////////////////////////////
     down_sampling(scan_points, filtered_scan_ptr);
     down_sampling(map_points, filtered_map_ptr);
     
     // find the initial orientation
-    if (!initialied) {
+    if (!initialized) {
     /* [Part 3] you can perform ICP several times to find a good initial guess */
         pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI> first_icp;
         float yaw, min_yaw, min_score = std::numeric_limits<float>::max();
@@ -234,7 +294,7 @@ public:
           first_icp.setInputTarget (filtered_map_ptr);
           
           first_icp.setMaxCorrespondenceDistance (3);
-          first_icp.setMaximumIterations (1000);
+          first_icp.setMaximumIterations (100);
           first_icp.setTransformationEpsilon (1e-8);
           first_icp.setEuclideanFitnessEpsilon (1e-8);
 
@@ -248,11 +308,11 @@ public:
               ROS_INFO("Update best pose");
           }
 
-
+        // The output of the ekf node can be used as a good initial guess for ICP.
         // set initial guess
-        init_guess = min_pose;
-        initialied = true;
         }
+        init_guess = min_pose;
+        initialized = true;
     }
       
     /* [Part 2] Perform ICP here or any other scan-matching algorithm */
@@ -263,9 +323,9 @@ public:
     icp.setInputTarget (filtered_map_ptr);
     
     // Set the max correspondence distance to 50cm (e.g., correspondences with higher distances will be ignored)
-    icp.setMaxCorrespondenceDistance (1);
+    icp.setMaxCorrespondenceDistance (3);
     // Set the maximum number of iterations (criterion 1)
-    icp.setMaximumIterations (1000);
+    icp.setMaximumIterations (80);
     // Set the transformation epsilon (criterion 2)
     icp.setTransformationEpsilon (1e-8);
     // Set the euclidean distance difference epsilon (criterion 3)
@@ -279,7 +339,8 @@ public:
 
     
 	/* Use result as next initial guess */
-    init_guess = result;
+    //init_guess = result;
+    std::cout << "Result" << std::endl;
     std::cout << result << std::endl;
     return result;
   }
